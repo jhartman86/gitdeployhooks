@@ -15,11 +15,6 @@ def abortBuild():
 	]);
 	sys.exit(0)
 
-# These should be parsed/determined from somewhere...
-# bundleDir	= '/home/jon/Desktop/sandbox/'
-# vhostTarget	= bundleDir + 'ln-release'
-# permDir 	= bundleDir + '_permanent/'
-# webDir 		= bundleDir + '_application/'
 
 # How this works: the corresponding hook file in the git repo
 # just instantiates the PreReceive object declared below, and

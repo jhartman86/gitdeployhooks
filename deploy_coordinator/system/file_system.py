@@ -46,3 +46,13 @@ class FileSystem:
 				continue
 			# If we get here, it can be deleted
 			cls.removeDir(fullPath)
+
+	# Does a file (specifically... it must be a file) exist
+	@staticmethod
+	def fileExists(path):
+		return os.path.isfile(path)
+
+	# Does the thing at the path exist? (path or directory)
+	@staticmethod
+	def exists(path):
+		return os.path.exists(path)

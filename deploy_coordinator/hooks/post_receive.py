@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import sys, os, ConfigParser
+import sys, os, subprocess, ConfigParser
 from pre_receive import PreReceive
 from deploy_coordinator.cli import Formatter, Output
-from deploy_coordinator.system.execute import Git, Composer
+from deploy_coordinator.system.execute import Execute, Git, Composer
 from deploy_coordinator.system.file_system import FileSystem
 from deploy_coordinator.system.parse_json import ParseJson
 
@@ -214,7 +214,7 @@ def postReceiveRunner(PostReceiveInstance):
 			# Show output
 			Output.line(Formatter('Symlinked to release').indent())
 		except:
-			raise Exception('Failed creating symlink pointer to latest release')
+			raise Exception('EMERGENCY: Failed creating symlink pointer to latest release')
 
 		# Purge stale (previous) deploys
 		try:
@@ -229,6 +229,38 @@ def postReceiveRunner(PostReceiveInstance):
 	except Exception as e:
 		Output.line(Formatter(e).color('yellow').indent())
 		Output.line(Formatter('This occurred during final build phase :(').color('red'))
+
+	try:
+		Output.multiLine([
+			'',
+			Formatter('Rebooting web server').style(['bold']).arrowed()
+		])
+		# Note, this depends on a) the shell script is executable, and b) more importantly,
+		# that the user (probably git) executing this script has been given PASSWORDLESS
+		# sudo access to run the commands contained w/in restartapache.sh.
+		# So: $: touch /etc/sudoers.d/gitdeploys
+		# $: sudo visudo /etc/sudoers.d/gitdeploys
+		# and add this line:
+		# {user}	ALL=NOPASSWD:/etc/init.d/apache2 stop, /etc/init.d/apache2 start
+		# whereas user probably = git
+		# Also, to eliminate the could not reliably determine hostname, setup
+		# servername.conf in /etc/apache2/conf-available with
+		# ServerName localhost
+		# then sudo a2enconf servername
+		restartApacheShellScript = os.path.join(PostReceiveInstance.repoHooksPath, 'restartapache.sh')
+		subproc = subprocess.Popen(restartApacheShellScript, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+		for line in iter(subproc.stdout.readline, ''):
+			Output.line(Formatter(line.rstrip()).indent())
+		for line in iter(subproc.stderr.readline, ''):
+			Output.line(Formatter(line.rstrip()).color('red').indent())
+		subproc.communicate()[0]
+		if subproc.returncode != 0:
+			Output.line(Formatter('Apache failed to restart!').color('red').style(['bold', 'underline']).indent())
+		else:
+			Output.line(Formatter('Apache restarted').color('green').indent())
+
+	except Exception as e:
+		Output.line(Formatter(e).color('red').indent())
 
 	# NOTICE, this is the LAST thing in the function
 	Output.line('')
@@ -246,6 +278,7 @@ class PostReceive(PreReceive):
 		self.locPermanentDirs	= os.path.join(self.buildDir, '_permanent', '')
 		self.locAppBundle		= os.path.join(self.buildDir, '_application', '')
 		self.locComposerCache	= os.path.join(self.buildDir, '_composercache', '')
+		self.repoHooksPath		= settings['repoHooksPath']
 		super(PostReceive, self).__init__(inputs)
 
 	def _hookProcess(self):
@@ -290,8 +323,6 @@ class PostReceive(PreReceive):
 			FileSystem.removeDir(os.path.join(pathAtTmpDir, '.git'))
 
 		FileSystem.remove(parseableTmpFile)
-
-
 
 		# wktree2 = Git(['--work-tree %s' % self.tmpDir(),
 		# 	'--git-dir /home/jon/Desktop/sf_ubuntu_vm/GitHooksDev/remote_repo.git',

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import sys, os
+import sys, os, ConfigParser
 from pre_receive import PreReceive
 from deploy_coordinator.cli import Formatter, Output
 from deploy_coordinator.system.execute import Git, Composer
@@ -63,6 +63,10 @@ def postReceiveRunner(PostReceiveInstance):
 	except Exception as e:
 		Output.line(Formatter(e.args[0]).color('red').indent())
 		abortBuild()
+
+	# SUBMODULES
+	PostReceiveInstance.inspectSubmodules()
+
 
 	# Pre-processing (eg. remove data dirs FROM THE CLONED tmp dir - which should
 	# not contain anything), then setup symlinks to permanent storage)
@@ -252,3 +256,53 @@ class PostReceive(PreReceive):
 			'checkout', '-f', self.newCommitID
 		])
 		return (execCall.process.returncode == 0)
+
+	def inspectSubmodules(self):
+		# @todo: this shouldn't even run if .gitmodules doesnt exist
+		f = open(self.tmpDir() + '.gitmodules', 'r')
+		mylist = []
+		for line in f:
+			mylist.append(line.strip('\t'))
+		untabbed = ''.join(mylist)
+		parseableTmpFile = os.path.join(self.tmpDir(), '.parseable')
+		f2 = open(parseableTmpFile, 'w')
+		f2.write(untabbed)
+		f2.close()
+		Output.line(Formatter('Inspecting submodules').indent())
+		config = ConfigParser.SafeConfigParser(allow_no_value=True)
+		config.readfp(open(parseableTmpFile))
+		
+		# @todo: figure out the exact commit SHA1 to pull!
+		for section in config.sections():
+			_path = config.get(section, 'path')
+			_url = config.get(section, 'url')
+			if config.has_option(section, 'branch'):
+				_branch = config.get(section, 'branch')
+			else:
+				_branch = 'master'
+			Output.multiLine([
+				Formatter('Detected submodule: %s' % _path).color('cyan').style(['bold']).indent(),
+				Formatter('Attempting pull from: %s' % _url).indent(),
+				Formatter('On branch: %s' % Formatter(_branch).style(['underline'])).indent()
+			])
+			pathAtTmpDir = os.path.join(self.tmpDir(), _path, '')
+			Git(['clone', '-b', _branch, '--single-branch', _url, pathAtTmpDir])
+			FileSystem.removeDir(os.path.join(pathAtTmpDir, '.git'))
+
+		FileSystem.remove(parseableTmpFile)
+
+
+
+		# wktree2 = Git(['--work-tree %s' % self.tmpDir(),
+		# 	'--git-dir /home/jon/Desktop/sf_ubuntu_vm/GitHooksDev/remote_repo.git',
+		# 	'submodule', 'status'
+		# ])
+		# Output.line(wktree.response)
+		# Output.line(wktree.error)
+		# print self.newCommitID
+		# execCall = Git(['--git-dir=/home/jon/Desktop/sf_ubuntu_vm/GitHooksDev/remote_repo.git',
+		# 	'--work-tree=%s' % self.tmpDir(),
+		# 	'submodule', 'status', '--recursive', self.newCommitID
+		# ])
+		# print execCall.response
+		# print execCall.error

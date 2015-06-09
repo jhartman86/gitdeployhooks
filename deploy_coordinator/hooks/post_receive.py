@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import sys, os, subprocess, ConfigParser
+import sys, os, subprocess, tempfile, ConfigParser
 from pre_receive import PreReceive
 from deploy_coordinator.cli import Formatter, Output
 from deploy_coordinator.system.execute import Execute, Git, Composer
@@ -71,7 +71,7 @@ def postReceiveRunner(PostReceiveInstance):
 	# Pre-processing (eg. remove data dirs FROM THE CLONED tmp dir - which should
 	# not contain anything), then setup symlinks to permanent storage)
 	try:
-		Output.line(Formatter('Applying buildfile rules').indent())
+		Output.line(Formatter('Applying buildfile rules').arrowed())
 		# Work on permanent storage dirs
 		permStorageDirs = PostReceiveInstance.parsedBuildFile().key('storage.dirs')
 		if permStorageDirs == None:
@@ -279,6 +279,7 @@ class PostReceive(PreReceive):
 		self.locAppBundle		= os.path.join(self.buildDir, '_application', '')
 		self.locComposerCache	= os.path.join(self.buildDir, '_composercache', '')
 		self.repoHooksPath		= settings['repoHooksPath']
+		self.bareRepoPath		= settings['bareRepoPath']
 		super(PostReceive, self).__init__(inputs)
 
 	def _hookProcess(self):
@@ -304,36 +305,117 @@ class PostReceive(PreReceive):
 		Output.line(Formatter('Inspecting submodules').indent())
 		config = ConfigParser.SafeConfigParser(allow_no_value=True)
 		config.readfp(open(parseableTmpFile))
+
+		submodTempPaths = []
 		
 		# @todo: figure out the exact commit SHA1 to pull!
+		# http://stackoverflow.com/questions/16574625/how-do-i-add-files-in-git-to-the-path-of-a-former-submodule/16581096#16581096
 		for section in config.sections():
-			_path = config.get(section, 'path')
-			_url = config.get(section, 'url')
-			if config.has_option(section, 'branch'):
-				_branch = config.get(section, 'branch')
-			else:
-				_branch = 'master'
-			Output.multiLine([
-				Formatter('Detected submodule: %s' % _path).color('cyan').style(['bold']).indent(),
-				Formatter('Attempting pull from: %s' % _url).indent(),
-				Formatter('On branch: %s' % Formatter(_branch).style(['underline'])).indent()
+			# Parsed path to submodule RELATIVE to repo root
+			_path 		= config.get(section, 'path')
+			
+			# Remote repo URL
+			_url 		= config.get(section, 'url')
+			
+			# Returns message w/ the status of the file target (in
+			# this case, its the path to the submodule) in format
+			# like "160000 commit {SHA} {path}"
+			_treeSpec	= Git([
+				'--git-dir', 
+				self.bareRepoPath,
+				'ls-tree',
+				'HEAD',
+				_path
 			])
-			pathAtTmpDir = os.path.join(self.tmpDir(), _path, '')
-			Git(['clone', '-b', _branch, '--single-branch', _url, pathAtTmpDir])
-			FileSystem.removeDir(os.path.join(pathAtTmpDir, '.git'))
+			
+			# Parse the response of the above system call and
+			# take the 3rd element in the array
+			_shaCommitID = _treeSpec.response.split()[2]
+			
+			# Show whass going down...
+			Output.multiLine([
+				'',
+				Formatter('Detected submodule at path: %s' % _path).color('cyan').style(['bold']).indent(),
+				Formatter('Pulling from: %s' % _url).indent(),
+				Formatter('Using commit @ SHA: %s' % Formatter(_shaCommitID).style(['underline'])).indent()
+			])
+			
+			# Full path where the submodule should exist, but in the tmp dir
+			# where the full repo has been cloned
+			fullProjectTmpBuildPath = os.path.join(self.tmpDir(), _path, '')
+			
+			# Temporary path where we clone the submodule repo
+			# so we can work on it
+			submodRepoCloneTmpPath = os.path.join(os.path.abspath(tempfile.gettempdir() + '/deploy_coord/submodules/%s' % _shaCommitID), '')
+			submodTempPaths.append(submodRepoCloneTmpPath)
+			
+			# If it already exists, nuke it so we're doing a fresh checkout...
+			if FileSystem.exists(submodRepoCloneTmpPath):
+				FileSystem.removeDir(submodRepoCloneTmpPath)
 
+			# Handlers for streaming output from stdOut/stdErr
+			def cbStdOut(line):
+				Output.line(Formatter(line.rstrip()).indent())
+			def cbStdErr(line):
+				Output.line(Formatter(line.rstrip()).indent())
+			processOptions = {
+				'streamResponse':True, 'receiveStdOut': cbStdOut, 'receiveStdErr': cbStdErr
+			}
+
+			# Actually clone the remote repo
+			cloneProc = Git([
+				'clone', 
+				_url, 
+				submodRepoCloneTmpPath
+			], processOptions)
+			if cloneProc.process.returncode != 0:
+				Output.line(Formatter('Clone failed!').color('red').style(['bold', 'underline']).indent())
+				abortBuild()
+			else:
+				Output.line(Formatter(Formatter(Output.CHECKMARK).color('green') + ' Cloned OK').indent())
+
+			# Check the repo out to specified commit ID
+			pullProc = Git([
+				'--git-dir=%s.git' % submodRepoCloneTmpPath,
+				'--work-tree=%s' % submodRepoCloneTmpPath, 
+				'checkout',
+				'-b',
+				_shaCommitID,
+				_shaCommitID
+			], processOptions)
+			if pullProc.process.returncode != 0:
+				Output.line(Formatter('Unable to checkout commit @ %s' % _shaCommitID).color('red').style(['bold', 'underline']).indent())
+				abortBuild()
+			else:
+				Output.line(Formatter(Formatter(Output.CHECKMARK).color('green') + ' Pulled target SHA OK').indent())
+
+			# Now run checkout-index (which works on the current head, ie. the
+			# the currently checked out branch); and copy everything to the destination
+			# of the full project build location
+			checkoutProc = Git([
+				'--git-dir=%s.git' % submodRepoCloneTmpPath,
+				'checkout-index',
+				'-a',
+				'-f',
+				'--prefix=%s' % fullProjectTmpBuildPath
+			], processOptions)
+			if checkoutProc.process.returncode != 0:
+				Output.line(Formatter('Unable to checkout index...').color('red').style(['bold', 'underline']).indent())
+				abortBuild()
+			else:
+				Output.line(Formatter(Formatter(Output.CHECKMARK).color('green') + ' Index Checked Out OK (Files Copied)').indent())
+
+			Output.line(Formatter('Submodule OK :)').color('green').indent())
+
+		Output.multiLine([
+			'',
+			Formatter('Cleaning up temp files').color('yellow').indent(),
+			''
+		])
+
+		# Remove temp directories
+		for tmpPath in submodTempPaths:
+			FileSystem.removeDir(tmpPath)
+
+		# Remove the temporarily created parseableTmpFile
 		FileSystem.remove(parseableTmpFile)
-
-		# wktree2 = Git(['--work-tree %s' % self.tmpDir(),
-		# 	'--git-dir /home/jon/Desktop/sf_ubuntu_vm/GitHooksDev/remote_repo.git',
-		# 	'submodule', 'status'
-		# ])
-		# Output.line(wktree.response)
-		# Output.line(wktree.error)
-		# print self.newCommitID
-		# execCall = Git(['--git-dir=/home/jon/Desktop/sf_ubuntu_vm/GitHooksDev/remote_repo.git',
-		# 	'--work-tree=%s' % self.tmpDir(),
-		# 	'submodule', 'status', '--recursive', self.newCommitID
-		# ])
-		# print execCall.response
-		# print execCall.error

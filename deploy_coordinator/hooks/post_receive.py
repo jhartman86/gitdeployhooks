@@ -116,74 +116,81 @@ def postReceiveRunner(PostReceiveInstance):
 			'',
 			Formatter('Inspecting composer settings').arrowed()
 		])
-		composerWD = PostReceiveInstance.parsedBuildFile().key('composer.workingDir')
-		if composerWD == None:
-			raise Exception('No composer run specified in buildfile')
-		
-		composerWDPathTmp 	 = os.path.join(PostReceiveInstance.tmpDir(), composerWD)
-		composerFilePath  	 = os.path.join(composerWDPathTmp, 'composer.json')
-		composerLockFilePath = os.path.join(composerWDPathTmp, 'composer.lock')
 
-		# Ensure composer.json file exists in the target directory
-		if not FileSystem.fileExists(composerFilePath):
-			raise Exception('Missing composer file (composer.json)')
+		# If composer key not defined, don't do anything
+		if PostReceiveInstance.parsedBuildFile().key('composer') == None:
+			Output.line(Formatter('No composer run specified; moving on....').indent())
 
-		# Ensure composer.lock file exists in the target directory
-		if not FileSystem.fileExists(composerLockFilePath):
-			raise Exception('Missing composer file (composer.lock)')
-
-		# Try to parse the composer lock file (which is JSON)
-		try:
-			parsedLockFile = ParseJson(composerLockFilePath)
-		except ValueError, e:
-			raise Exception('Unable to parse the composer.lock file')
-
-		# Get the hash key from the composer lock file to see if we already
-		# have a build to check for
-		composerHash = parsedLockFile.key('hash')
-		# In the tmp directory, what is the full path to the vendor dir (whether it exists or not, yet);
-		# this is where we'll generate a symlink to point to the permanent/cached composer builds
-		vendorDirInTmp = os.path.join(composerWDPathTmp, 'vendor')
-		# Full path to the permanent/cached build (eg. what the vendor directory should symlink to)
-		permBuildDir   = os.path.join(PostReceiveInstance.locComposerCache, composerHash)
-
-		# Check the composercache directory (which is always permanent) to see if a build
-		# already exists w/ the same value as the hash in the lock file. If not, we'll run a composer
-		# install...
-		if FileSystem.exists(os.path.join(PostReceiveInstance.locComposerCache, composerHash)):
-			Output.line(Formatter(Formatter('Using cached composer dependencies ->').color('green') + ' ' + composerHash).indent())
+		# Composer is defined; look at the composer.workingDir key and run
 		else:
-			Output.line(Formatter('Installing composer dependencies for path: ' + Formatter(composerWD).style(['underline'])).indent())
+			composerWD = PostReceiveInstance.parsedBuildFile().key('composer.workingDir')
+			if composerWD == None:
+				raise Exception('No composer run specified in buildfile')
 			
-			# Execute composer (fails silently, thats why we check for existence of vendorDirInTmp)
-			composerProc = Composer(['--working-dir=%s' % composerWDPathTmp, 'install'])
+			composerWDPathTmp 	 = os.path.join(PostReceiveInstance.tmpDir(), composerWD)
+			composerFilePath  	 = os.path.join(composerWDPathTmp, 'composer.json')
+			composerLockFilePath = os.path.join(composerWDPathTmp, 'composer.lock')
 
-			# Ensure the system call itself didn't return any errors
-			if not composerProc.process.returncode == 0:
-				# @todo: log error output somewhere
-				raise Exception('Executing composer failed hard; probably a syntax error...')
-			# Did the run work (kind of a double check, but most important b/c the dir needs to exist)
-			if FileSystem.exists(vendorDirInTmp):
-				# Copy "vendor" dir from location in tmp dir to the permanent _composercache dir,
-				# noting that it'll still be named 'vendor' in the permanent dir
-				FileSystem.mvFromTo(vendorDirInTmp, PostReceiveInstance.locComposerCache)
-				# Rename from "vendor" to the composer.lock file's hash value
-				os.rename(
-					os.path.join(PostReceiveInstance.locComposerCache, 'vendor'),
-					permBuildDir
-				)
-				# Output
-				Output.line(Formatter(Formatter('Using lock file version: ').color('green') + Formatter(composerHash).style(['underline'])).indent())
+			# Ensure composer.json file exists in the target directory
+			if not FileSystem.fileExists(composerFilePath):
+				raise Exception('Missing composer file (composer.json)')
+
+			# Ensure composer.lock file exists in the target directory
+			if not FileSystem.fileExists(composerLockFilePath):
+				raise Exception('Missing composer file (composer.lock)')
+
+			# Try to parse the composer lock file (which is JSON)
+			try:
+				parsedLockFile = ParseJson(composerLockFilePath)
+			except ValueError, e:
+				raise Exception('Unable to parse the composer.lock file')
+
+			# Get the hash key from the composer lock file to see if we already
+			# have a build to check for
+			composerHash = parsedLockFile.key('hash')
+			# In the tmp directory, what is the full path to the vendor dir (whether it exists or not, yet);
+			# this is where we'll generate a symlink to point to the permanent/cached composer builds
+			vendorDirInTmp = os.path.join(composerWDPathTmp, 'vendor')
+			# Full path to the permanent/cached build (eg. what the vendor directory should symlink to)
+			permBuildDir   = os.path.join(PostReceiveInstance.locComposerCache, composerHash)
+
+			# Check the composercache directory (which is always permanent) to see if a build
+			# already exists w/ the same value as the hash in the lock file. If not, we'll run a composer
+			# install...
+			if FileSystem.exists(os.path.join(PostReceiveInstance.locComposerCache, composerHash)):
+				Output.line(Formatter(Formatter('Using cached composer dependencies ->').color('green') + ' ' + composerHash).indent())
 			else:
-				raise Exception('Composer run failed')
+				Output.line(Formatter('Installing composer dependencies for path: ' + Formatter(composerWD).style(['underline'])).indent())
+				
+				# Execute composer (fails silently, thats why we check for existence of vendorDirInTmp)
+				composerProc = Composer(['--working-dir=%s' % composerWDPathTmp, 'install'])
 
-		
-		# Create a symlink for the vendor dir (which is no longer there after having been
-		# moving/renamed above, OR it already existed hence the "cache") pointing at permBuildDir;
-		# which is (what was previously) the vendor directory, renamed to the hash from the lockfile.
-		# This always happens, as we're symlinking to what we now know to be the cached directory, whether
-		# it was freshly created or not from above.
-		FileSystem.genSymlink(permBuildDir, vendorDirInTmp)
+				# Ensure the system call itself didn't return any errors
+				if not composerProc.process.returncode == 0:
+					# @todo: log error output somewhere
+					raise Exception('Executing composer failed hard; probably a syntax error...')
+				# Did the run work (kind of a double check, but most important b/c the dir needs to exist)
+				if FileSystem.exists(vendorDirInTmp):
+					# Copy "vendor" dir from location in tmp dir to the permanent _composercache dir,
+					# noting that it'll still be named 'vendor' in the permanent dir
+					FileSystem.mvFromTo(vendorDirInTmp, PostReceiveInstance.locComposerCache)
+					# Rename from "vendor" to the composer.lock file's hash value
+					os.rename(
+						os.path.join(PostReceiveInstance.locComposerCache, 'vendor'),
+						permBuildDir
+					)
+					# Output
+					Output.line(Formatter(Formatter('Using lock file version: ').color('green') + Formatter(composerHash).style(['underline'])).indent())
+				else:
+					raise Exception('Composer run failed')
+
+			
+			# Create a symlink for the vendor dir (which is no longer there after having been
+			# moving/renamed above, OR it already existed hence the "cache") pointing at permBuildDir;
+			# which is (what was previously) the vendor directory, renamed to the hash from the lockfile.
+			# This always happens, as we're symlinking to what we now know to be the cached directory, whether
+			# it was freshly created or not from above.
+			FileSystem.genSymlink(permBuildDir, vendorDirInTmp)
 		
 	except Exception as e:
 		Output.line(Formatter(e).color('yellow').indent())

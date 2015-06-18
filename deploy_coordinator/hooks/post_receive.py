@@ -292,8 +292,15 @@ class PostReceive(PreReceive):
 		return (execCall.process.returncode == 0)
 
 	def inspectSubmodules(self):
-		# @todo: this shouldn't even run if .gitmodules doesnt exist
-		f = open(self.tmpDir() + '.gitmodules', 'r')
+		# if repo has submodules; it HAS to have .gitmodules in the root
+		gitmodulefile = self.tmpDir() + '.gitmodules'
+
+		# if .gitmodules doesn't exist, skip this whole kit and kaboodle
+		if not os.path.isfile(gitmodulefile):
+			return
+
+		# gitmodules file exists; lets do work
+		f = open(gitmodulefile, 'r')
 		mylist = []
 		for line in f:
 			mylist.append(line.strip('\t'))

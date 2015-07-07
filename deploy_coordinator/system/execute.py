@@ -39,5 +39,5 @@ class Git(Execute):
 class Composer(Execute):
 
 	def __init__(self, args, options={}):
-		execPath = str(Execute(['which', 'composer', {'streamResponse': False}]).response.strip())
+		execPath = str(Execute(['which', 'composer'], {'streamResponse': False}).response.strip())
 		super(Composer, self).__init__([execPath] + args, options)
